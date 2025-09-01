@@ -26,6 +26,8 @@ electron_demo/
 │       │   └── main.tsx
 │       └── index.html
 ├── .editorconfig
+├── .env copy
+├── .env_example
 ├── .gitignore
 ├── .npmrc
 ├── .prettierignore
@@ -56,6 +58,23 @@ indent_size = 2
 end_of_line = lf
 insert_final_newline = true
 trim_trailing_whitespace = true
+```
+
+## `.env copy`
+
+```
+OPENROUTER_API_KEY='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'
+OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
+OPENROUTER_MODEL_NAME="deepseek/deepseek-chat-v3.1:free" # "openai/gpt-oss-20b:free" # "deepseek/deepseek-chat-v3-0324:free" # "qwen/qwen3-coder:free" #"deepseek/deepseek-r1-0528:free"#
+
+```
+
+## `.env_example`
+
+```
+OPENROUTER_API_KEY='sk-xxx'
+OPENROUTER_BASE_URL="xxx"
+OPENROUTER_MODEL_NAME="xxx" 
 ```
 
 ## `.gitignore`
@@ -274,41 +293,61 @@ export default tseslint.config(
 ## `README.md`
 
 ````text
-\# electron_demo
+\# Electron LLM Demo
 
-An Electron application with React and TypeScript
+一个使用 Electron、React 和 TypeScript 构建的桌面应用，可以同时与云端大模型 (OpenRouter) 和本地大模型 (Ollama) 进行交互。
 
-#\# Recommended IDE Setup
+#\# 核心功能
 
-- [VSCode](https://code.visualstudio.com/) + [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint) + [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode)
+- **双模型支持**: 可随时切换调用云端或本地的语言模型。
+- **配置简单**: 通过 `.env` 文件即可轻松配置 API Key 和模型参数。
+- **界面简洁**: 使用 React 构建，界面响应迅速，操作直观。
+- **跨平台**: 基于 Electron，可打包为 Windows, macOS 和 Linux 应用。
 
-#\# Project Setup
+#\# 技术栈
 
-##\# Install
+- **框架**: Electron
+- **渲染进程**: React + Vite + TypeScript
+- **主进程**: Node.js + TypeScript
+- **打包**: electron-builder
+- **代码规范**: ESLint + Prettier
+
+#\# 项目设置与运行
+
+##\# 1. 安装依赖
+
+在项目根目录下打开终端，运行以下命令：
 
 \`\`\`bash
-$ npm install
+npm install
 \`\`\`
+##\# 2. 环境配置 (首次运行必须！)
+本项目需要连接到云端 LLM 服务 (OpenRouter)，因此需要配置 API Key。
+在项目根目录 (与 package.json 同级) 创建一个名为 .env 的文件。
+将以下内容复制到 .env 文件中，并填入你自己的信息：
+\`\`\`
+OPENROUTER_API_KEY=your_openrouter_api_key
+\`\`\`
+安全警告: .env 文件包含了你的私密信息，请勿将此文件提交到任何代码仓库或分享给他人！
 
-##\# Development
-
+##\# 3. 运行开发环境
+配置好 .env 文件后，运行以下命令启动应用：
 \`\`\`bash
-$ npm run dev
+npm run dev
 \`\`\`
-
-##\# Build
-
+##\# 4. 打包应用
+根据你的操作系统，选择对应的命令进行打包：
 \`\`\`bash
-\# For windows
-$ npm run build:win
+\# 打包 Windows 应用
+npm run build:win
 
-\# For macOS
-$ npm run build:mac
+\# 打包 macOS 应用
+npm run build:mac
 
-\# For Linux
-$ npm run build:linux
+\# 打包 Linux 应用
+npm run build:linux
 \`\`\`
-
+---
 ````
 
 ## `src/main/index.ts`
@@ -316,10 +355,40 @@ $ npm run build:linux
 ```typescript
 // src/main/index.ts
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { join } from 'path'
+import { join, dirname, resolve } from 'path' // ✅ 引入 path 模块的更多功能
+import fs from 'fs' // ✅ 引入 fs 模块
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import OpenAI from 'openai'
+import dotenv from 'dotenv'
+
+// ✅ --- 智能查找并加载 .env 文件的函数 ---
+function findAndLoadEnv() {
+  let currentDir = __dirname // 从当前文件所在目录开始
+  
+  // 循环向上查找，直到到达根目录
+  while (currentDir !== resolve(currentDir, '..')) {
+    const envPath = join(currentDir, '.env')
+    
+    // 如果在当前目录找到了 .env 文件
+    if (fs.existsSync(envPath)) {
+      console.log(`✅ 成功在 ${currentDir} 目录找到并加载 .env 文件`)
+      dotenv.config({ path: envPath })
+      return // 找到就立刻停止
+    }
+    
+    // 否则，移动到上一层父目录继续查找
+    currentDir = resolve(currentDir, '..')
+  }
+  
+  // 如果循环结束还没找到
+  console.warn('⚠️ 未能在任何父目录中找到 .env 文件，将使用默认配置。')
+}
+
+// ✅ 在程序最开始，调用我们的智能查找函数来加载环境变量
+findAndLoadEnv()
+// --- 智能查找结束 ---
+
 
 // ✅ 使用环境变量存储 OpenRouter API 信息
 const client = new OpenAI({
@@ -336,7 +405,8 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      contextIsolation: true
     }
   })
 
@@ -351,6 +421,7 @@ function createWindow(): void {
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    mainWindow.webContents.openDevTools()
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
@@ -363,11 +434,14 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // ✅ 获取应用版本
   ipcMain.handle('get-app-version', () => app.getVersion())
 
-  // ✅ 云端 LLM 调用 (OpenRouter)
   ipcMain.handle('ask-llm-cloud', async (_, prompt: string) => {
+    if (!client.apiKey) {
+      console.error('OpenRouter API Key 未配置！')
+      return '⚠️ 云端调用失败: 请在项目根目录或其父目录中放置 .env 文件并配置 OPENROUTER_API_KEY。'
+    }
+
     try {
       const completion = await client.chat.completions.create({
         model: process.env.OPENROUTER_MODEL_NAME ?? 'deepseek/deepseek-chat-v3.1:free',
@@ -376,21 +450,37 @@ app.whenReady().then(() => {
       return completion.choices?.[0]?.message?.content ?? '(云端无结果)'
     } catch (err: any) {
       console.error('云端调用出错:', err)
+      if (err.status === 401) {
+        return '⚠️ 云端调用失败: API Key 无效或错误，请检查 .env 文件中的配置。'
+      }
       return `⚠️ 云端调用失败: ${err.message}`
     }
   })
 
-  // ✅ 本地 LLM 调用 (Ollama REST API)
   ipcMain.handle('ask-llm-local', async (_, prompt: string) => {
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
+
       const resp = await fetch('http://127.0.0.1:11434/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'llama3', prompt })
+        body: JSON.stringify({ model: 'llama3', prompt }),
+        signal: controller.signal
       })
-      const data = await resp.json()
+
+      clearTimeout(timeoutId)
+
+      const text = await resp.text()
+      const lines = text.trim().split('\n')
+      const lastLine = lines[lines.length - 1]
+      const data = JSON.parse(lastLine)
+      
       return data.response ?? '(本地无结果)'
-    } catch {
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        return '⚠️ 本地模型响应超时，请确认 Ollama 服务是否正常且模型已加载。'
+      }
       return '⚠️ 本地模型未运行，请先启动 Ollama 或本地 LLM 服务'
     }
   })
@@ -407,7 +497,6 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
-
 ```
 
 ## `src/preload/index.d.ts`

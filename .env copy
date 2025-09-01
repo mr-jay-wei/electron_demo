@@ -1,0 +1,3 @@
+OPENROUTER_API_KEY='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'
+OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
+OPENROUTER_MODEL_NAME="deepseek/deepseek-chat-v3.1:free" # "openai/gpt-oss-20b:free" # "deepseek/deepseek-chat-v3-0324:free" # "qwen/qwen3-coder:free" #"deepseek/deepseek-r1-0528:free"#
