@@ -1,35 +1,56 @@
 // src/renderer/src/App.tsx
 import { useState } from 'react'
-// ... 其他 import ...
 
 function App(): React.JSX.Element {
-  // 创建一个 state 来存储版本号
   const [appVersion, setAppVersion] = useState('未知')
+  const [prompt, setPrompt] = useState('')
+  const [response, setResponse] = useState('')
 
-  const handleSend = (): void => {
-    window.electron.renderer.send('ping')
-  }
-
-  // 新增：处理获取版本号的点击事件
   const handleGetVersion = async (): Promise<void> => {
-    // 调用我们通过 preload 暴露的 invoke 方法
     const version = await window.electron.renderer.invoke('get-app-version')
-    console.log('渲染进程收到了版本号:', version) // 在开发者工具的 Console 中打印
     setAppVersion(version)
   }
 
-  return (
-    <div className="container">
-      {/* ... 原来的内容 ... */}
-      <h1>我们一起构建的第一个桌面应用</h1>
+  const handleAskCloud = async (): Promise<void> => {
+    if (!prompt) return
+    const ans = await window.electron.renderer.invoke('ask-llm-cloud', prompt)
+    setResponse(ans)
+  }
 
-      {/* ... 原来的按钮 ... */}
-      <button onClick={handleSend}>发送 Ping 消息到主进程</button>
-      
-      {/* 新增的按钮和显示区域 */}
-      <div style={{ marginTop: '20px' }}>
+  const handleAskLocal = async (): Promise<void> => {
+    if (!prompt) return
+    const ans = await window.electron.renderer.invoke('ask-llm-local', prompt)
+    setResponse(ans)
+  }
+
+  return (
+    <div className="container" style={{ padding: 20 }}>
+      <h1>Electron LLM Demo</h1>
+
+      <div style={{ marginBottom: '10px' }}>
         <button onClick={handleGetVersion}>获取应用版本号</button>
-        <p>当前应用版本: <strong>{appVersion}</strong></p>
+        <span style={{ marginLeft: '10px' }}>当前版本: {appVersion}</span>
+      </div>
+
+      <div style={{ marginBottom: '10px' }}>
+        <textarea
+          style={{ width: '100%', height: '80px' }}
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="请输入你的问题..."
+        />
+      </div>
+
+      <div style={{ marginBottom: '10px' }}>
+        <button onClick={handleAskCloud}>云端 LLM 回复</button>
+        <button onClick={handleAskLocal} style={{ marginLeft: '10px' }}>
+          本地 LLM 回复
+        </button>
+      </div>
+
+      <div>
+        <p>模型回答：</p>
+        <pre style={{ whiteSpace: 'pre-wrap' }}>{response}</pre>
       </div>
     </div>
   )

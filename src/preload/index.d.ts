@@ -1,5 +1,4 @@
 // src/preload/index.d.ts
-
 declare global {
   interface Window {
     electron: {

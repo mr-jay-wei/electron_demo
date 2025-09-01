@@ -7,10 +7,6 @@
 ```
 electron_demo/
 ├── out
-│   ├── main
-│   │   └── index.js
-│   └── preload
-│       └── index.js
 ├── resources
 ├── src
 │   ├── main
@@ -219,83 +215,6 @@ export default tseslint.config(
 
 ```
 
-## `out/main/index.js`
-
-```javascript
-"use strict";
-const electron = require("electron");
-const path = require("path");
-const utils = require("@electron-toolkit/utils");
-const icon = path.join(__dirname, "../../resources/icon.png");
-function createWindow() {
-  const mainWindow = new electron.BrowserWindow({
-    width: 900,
-    height: 670,
-    show: false,
-    autoHideMenuBar: true,
-    ...process.platform === "linux" ? { icon } : {},
-    webPreferences: {
-      preload: path.join(__dirname, "../preload/index.js"),
-      sandbox: false
-    }
-  });
-  mainWindow.on("ready-to-show", () => {
-    mainWindow.show();
-  });
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    electron.shell.openExternal(details.url);
-    return { action: "deny" };
-  });
-  if (utils.is.dev && process.env["ELECTRON_RENDERER_URL"]) {
-    mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);
-  } else {
-    mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
-  }
-}
-electron.app.whenReady().then(() => {
-  utils.electronApp.setAppUserModelId("com.electron");
-  electron.app.on("browser-window-created", (_, window) => {
-    utils.optimizer.watchWindowShortcuts(window);
-  });
-  electron.ipcMain.on("ping", () => console.log("pong"));
-  electron.ipcMain.handle("get-app-version", () => {
-    console.log("主进程收到了获取应用版本的请求");
-    return electron.app.getVersion();
-  });
-  createWindow();
-  electron.app.on("activate", function() {
-    if (electron.BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
-});
-electron.app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    electron.app.quit();
-  }
-});
-
-```
-
-## `out/preload/index.js`
-
-```javascript
-"use strict";
-const electron = require("electron");
-const ipc = {
-  renderer: {
-    send: (channel, data) => electron.ipcRenderer.send(channel, data),
-    on: (channel, listener) => {
-      electron.ipcRenderer.on(channel, listener);
-    },
-    // 新增一个 invoke 方法
-    invoke: (channel, ...args) => {
-      return electron.ipcRenderer.invoke(channel, ...args);
-    }
-  }
-};
-electron.contextBridge.exposeInMainWorld("electron", ipc);
-
-```
-
 ## `package.json`
 
 ```json
@@ -395,13 +314,20 @@ $ npm run build:linux
 ## `src/main/index.ts`
 
 ```typescript
+// src/main/index.ts
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import OpenAI from 'openai'
+
+// ✅ 使用环境变量存储 OpenRouter API 信息
+const client = new OpenAI({
+  baseURL: process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1',
+  apiKey: process.env.OPENROUTER_API_KEY ?? ''
+})
 
 function createWindow(): void {
-  // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
@@ -423,8 +349,6 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  // HMR for renderer base on electron-vite cli.
-  // Load the remote URL for development or the local html file for production.
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -432,62 +356,81 @@ function createWindow(): void {
   }
 }
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
-  // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
-  // Default open or close DevTools by F12 in development
-  // and ignore CommandOrControl + R in production.
-  // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
-  // 新增：监听 'get-app-version' 请求，并返回应用版本号
-  ipcMain.handle('get-app-version', () => {
-    console.log('主进程收到了获取应用版本的请求') // 在命令行打印日志，方便调试
-    return app.getVersion()
+  // ✅ 获取应用版本
+  ipcMain.handle('get-app-version', () => app.getVersion())
+
+  // ✅ 云端 LLM 调用 (OpenRouter)
+  ipcMain.handle('ask-llm-cloud', async (_, prompt: string) => {
+    try {
+      const completion = await client.chat.completions.create({
+        model: process.env.OPENROUTER_MODEL_NAME ?? 'deepseek/deepseek-chat-v3.1:free',
+        messages: [{ role: 'user', content: prompt }]
+      })
+      return completion.choices?.[0]?.message?.content ?? '(云端无结果)'
+    } catch (err: any) {
+      console.error('云端调用出错:', err)
+      return `⚠️ 云端调用失败: ${err.message}`
+    }
+  })
+
+  // ✅ 本地 LLM 调用 (Ollama REST API)
+  ipcMain.handle('ask-llm-local', async (_, prompt: string) => {
+    try {
+      const resp = await fetch('http://127.0.0.1:11434/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'llama3', prompt })
+      })
+      const data = await resp.json()
+      return data.response ?? '(本地无结果)'
+    } catch {
+      return '⚠️ 本地模型未运行，请先启动 Ollama 或本地 LLM 服务'
+    }
   })
 
   createWindow()
 
   app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
 })
 
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.
-
 ```
 
 ## `src/preload/index.d.ts`
 
 ```typescript
-import { ElectronAPI } from '@electron-toolkit/preload'
-
+// src/preload/index.d.ts
 declare global {
   interface Window {
-    electron: ElectronAPI
+    electron: {
+      renderer: {
+        send: (channel: string, data?: any) => void
+        on: (channel: string, listener: (event: any, ...args: any[]) => void) => void
+        invoke: (channel: string, ...args: any[]) => Promise<any>
+      }
+      process: {
+        versions: NodeJS.ProcessVersions
+      }
+    }
     api: unknown
   }
 }
+
+export {}
 
 ```
 
@@ -497,30 +440,34 @@ declare global {
 // src/preload/index.ts
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron'
 
-// 白名单，只允许暴露特定的通道
-const ipc = {
+// 统一暴露到 window.electron 的 API
+const api = {
   renderer: {
     send: (channel: string, data?: any) => ipcRenderer.send(channel, data),
     on: (channel: string, listener: (event: IpcRendererEvent, ...args: any[]) => void) => {
       ipcRenderer.on(channel, listener)
     },
-    // 新增一个 invoke 方法
     invoke: (channel: string, ...args: any[]): Promise<any> => {
       return ipcRenderer.invoke(channel, ...args)
     }
+  },
+  // 只暴露需要的进程信息，避免把完整 process 暴露给渲染进程
+  process: {
+    versions: process.versions
   }
 }
 
-// 将 ipc 对象挂载到 window.electron 上
-contextBridge.exposeInMainWorld('electron', ipc)
+contextBridge.exposeInMainWorld('electron', api)
 
-// 为了让 TypeScript 能够识别我们新增的 window.electron 对象
-// 我们需要扩展一下 Window 接口
+// ✅ 建议删除之前这里的 declare global（如果你留着，就改成 typeof api 保持一致）
 declare global {
   interface Window {
-    electron: typeof ipc
+    electron: typeof api
   }
 }
+
+export {}
+
 ```
 
 ## `src/renderer/index.html`
@@ -551,42 +498,64 @@ declare global {
 ```
 // src/renderer/src/App.tsx
 import { useState } from 'react'
-// ... 其他 import ...
 
-function App(): JSX.Element {
-  // 创建一个 state 来存储版本号
+function App(): React.JSX.Element {
   const [appVersion, setAppVersion] = useState('未知')
+  const [prompt, setPrompt] = useState('')
+  const [response, setResponse] = useState('')
 
-  const handleSend = (): void => {
-    window.electron.renderer.send('ping')
-  }
-
-  // 新增：处理获取版本号的点击事件
   const handleGetVersion = async (): Promise<void> => {
-    // 调用我们通过 preload 暴露的 invoke 方法
     const version = await window.electron.renderer.invoke('get-app-version')
-    console.log('渲染进程收到了版本号:', version) // 在开发者工具的 Console 中打印
     setAppVersion(version)
   }
 
-  return (
-    <div className="container">
-      {/* ... 原来的内容 ... */}
-      <h1>我们一起构建的第一个桌面应用</h1>
+  const handleAskCloud = async (): Promise<void> => {
+    if (!prompt) return
+    const ans = await window.electron.renderer.invoke('ask-llm-cloud', prompt)
+    setResponse(ans)
+  }
 
-      {/* ... 原来的按钮 ... */}
-      <button onClick={handleSend}>发送 Ping 消息到主进程</button>
-      
-      {/* 新增的按钮和显示区域 */}
-      <div style={{ marginTop: '20px' }}>
+  const handleAskLocal = async (): Promise<void> => {
+    if (!prompt) return
+    const ans = await window.electron.renderer.invoke('ask-llm-local', prompt)
+    setResponse(ans)
+  }
+
+  return (
+    <div className="container" style={{ padding: 20 }}>
+      <h1>Electron LLM Demo</h1>
+
+      <div style={{ marginBottom: '10px' }}>
         <button onClick={handleGetVersion}>获取应用版本号</button>
-        <p>当前应用版本: <strong>{appVersion}</strong></p>
+        <span style={{ marginLeft: '10px' }}>当前版本: {appVersion}</span>
+      </div>
+
+      <div style={{ marginBottom: '10px' }}>
+        <textarea
+          style={{ width: '100%', height: '80px' }}
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="请输入你的问题..."
+        />
+      </div>
+
+      <div style={{ marginBottom: '10px' }}>
+        <button onClick={handleAskCloud}>云端 LLM 回复</button>
+        <button onClick={handleAskLocal} style={{ marginLeft: '10px' }}>
+          本地 LLM 回复
+        </button>
+      </div>
+
+      <div>
+        <p>模型回答：</p>
+        <pre style={{ whiteSpace: 'pre-wrap' }}>{response}</pre>
       </div>
     </div>
   )
 }
 
 export default App
+
 ```
 
 ## `src/renderer/src/assets/base.css`

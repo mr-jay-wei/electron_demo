@@ -17,7 +17,7 @@ IGNORE_PATTERNS: Set[str] = {
     # UV 和数据相关文件/文件夹
     "uv.lock", "data", "my_chromadb_vector_store", "*/.pytest_cache", 
     # 特定路径忽略
-    "*/package-lock.json","package-lock.json",
+    "*/package-lock.json","package-lock.json","out/*",
     "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp", "*.svg", "*.ico", "*.webp",
     "*.mp3", "*.wav", "*.ogg", "*.flac", "*.aac", "*.m4a",
     "*.mp4", "*.mov", "*.avi", "*.mkv", "*.webm", "*.flv",
