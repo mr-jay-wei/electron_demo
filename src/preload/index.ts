@@ -1,27 +1,30 @@
 // src/preload/index.ts
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron'
 
-// 白名单，只允许暴露特定的通道
-const ipc = {
+// 统一暴露到 window.electron 的 API
+const api = {
   renderer: {
     send: (channel: string, data?: any) => ipcRenderer.send(channel, data),
     on: (channel: string, listener: (event: IpcRendererEvent, ...args: any[]) => void) => {
       ipcRenderer.on(channel, listener)
     },
-    // 新增一个 invoke 方法
     invoke: (channel: string, ...args: any[]): Promise<any> => {
       return ipcRenderer.invoke(channel, ...args)
     }
+  },
+  // 只暴露需要的进程信息，避免把完整 process 暴露给渲染进程
+  process: {
+    versions: process.versions
   }
 }
 
-// 将 ipc 对象挂载到 window.electron 上
-contextBridge.exposeInMainWorld('electron', ipc)
+contextBridge.exposeInMainWorld('electron', api)
 
-// 为了让 TypeScript 能够识别我们新增的 window.electron 对象
-// 我们需要扩展一下 Window 接口
+// ✅ 建议删除之前这里的 declare global（如果你留着，就改成 typeof api 保持一致）
 declare global {
   interface Window {
-    electron: typeof ipc
+    electron: typeof api
   }
 }
+
+export {}

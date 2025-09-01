@@ -2,7 +2,7 @@
 import { useState } from 'react'
 // ... 其他 import ...
 
-function App(): JSX.Element {
+function App(): React.JSX.Element {
   // 创建一个 state 来存储版本号
   const [appVersion, setAppVersion] = useState('未知')
 
