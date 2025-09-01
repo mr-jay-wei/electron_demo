@@ -1,4 +1,3 @@
-// src/renderer/src/App.tsx
 import { useState } from 'react'
 
 function App(): React.JSX.Element {
@@ -15,6 +14,19 @@ function App(): React.JSX.Element {
     if (!prompt) return
     const ans = await window.electron.renderer.invoke('ask-llm-cloud', prompt)
     setResponse(ans)
+  }
+
+  const handleAskCloudStream = async (): Promise<void> => {
+    if (!prompt) return
+    setResponse('') // 清空旧内容
+
+    // 监听流式输出
+    window.electron.renderer.onCloudStream((delta) => {
+      setResponse((prev) => prev + delta)
+    })
+
+    // 发起流式请求
+    await window.electron.renderer.invoke('ask-llm-cloud-stream', prompt)
   }
 
   const handleAskLocal = async (): Promise<void> => {
@@ -43,6 +55,9 @@ function App(): React.JSX.Element {
 
       <div style={{ marginBottom: '10px' }}>
         <button onClick={handleAskCloud}>云端 LLM 回复</button>
+        <button onClick={handleAskCloudStream} style={{ marginLeft: '10px' }}>
+          云端流式 LLM 回复
+        </button>
         <button onClick={handleAskLocal} style={{ marginLeft: '10px' }}>
           本地 LLM 回复
         </button>

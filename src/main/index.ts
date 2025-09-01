@@ -34,8 +34,6 @@ function findAndLoadEnv() {
 findAndLoadEnv()
 // --- 智能查找结束 ---
 
-
-// ✅ 使用环境变量存储 OpenRouter API 信息
 const client = new OpenAI({
   baseURL: process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1',
   apiKey: process.env.OPENROUTER_API_KEY ?? ''
@@ -50,8 +48,7 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
-      contextIsolation: true
+      sandbox: false
     }
   })
 
@@ -66,7 +63,6 @@ function createWindow(): void {
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-    mainWindow.webContents.openDevTools()
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
@@ -79,53 +75,65 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
+  // 应用版本号
   ipcMain.handle('get-app-version', () => app.getVersion())
 
+  // 云端 LLM（一次性返回）
   ipcMain.handle('ask-llm-cloud', async (_, prompt: string) => {
-    if (!client.apiKey) {
-      console.error('OpenRouter API Key 未配置！')
-      return '⚠️ 云端调用失败: 请在项目根目录或其父目录中放置 .env 文件并配置 OPENROUTER_API_KEY。'
-    }
-
     try {
       const completion = await client.chat.completions.create({
-        model: process.env.OPENROUTER_MODEL_NAME ?? 'deepseek/deepseek-chat-v3.1:free',
+        model: process.env.OPENROUTER_MODEL_NAME ?? 'openai/gpt-3.5-turbo',
         messages: [{ role: 'user', content: prompt }]
       })
       return completion.choices?.[0]?.message?.content ?? '(云端无结果)'
     } catch (err: any) {
       console.error('云端调用出错:', err)
-      if (err.status === 401) {
-        return '⚠️ 云端调用失败: API Key 无效或错误，请检查 .env 文件中的配置。'
-      }
       return `⚠️ 云端调用失败: ${err.message}`
     }
   })
 
+  // 云端 LLM（流式输出）
+  ipcMain.handle('ask-llm-cloud-stream', async (_, prompt: string) => {
+    if (!client.apiKey) {
+      return '⚠️ 云端调用失败: API Key 未配置'
+    }
+
+    try {
+      const stream = await client.chat.completions.create({
+        model: process.env.OPENROUTER_MODEL_NAME ?? 'openai/gpt-3.5-turbo',
+        messages: [{ role: 'user', content: prompt }],
+        stream: true
+      })
+
+      let fullText = ''
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content ?? ''
+        fullText += delta
+
+        // 推送到渲染进程
+        BrowserWindow.getAllWindows().forEach((win) => {
+          win.webContents.send('cloud-stream-data', delta)
+        })
+      }
+
+      return fullText
+    } catch (err: any) {
+      console.error('流式云端调用出错:', err)
+      return `⚠️ 云端调用失败: ${err.message}`
+    }
+  })
+
+  // 本地 LLM（Ollama）
   ipcMain.handle('ask-llm-local', async (_, prompt: string) => {
     try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 5000)
-
       const resp = await fetch('http://127.0.0.1:11434/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'llama3', prompt }),
-        signal: controller.signal
+        body: JSON.stringify({ model: 'llama3', prompt })
       })
-
-      clearTimeout(timeoutId)
-
-      const text = await resp.text()
-      const lines = text.trim().split('\n')
-      const lastLine = lines[lines.length - 1]
-      const data = JSON.parse(lastLine)
-      
+      const data = await resp.json()
       return data.response ?? '(本地无结果)'
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        return '⚠️ 本地模型响应超时，请确认 Ollama 服务是否正常且模型已加载。'
-      }
+    } catch {
       return '⚠️ 本地模型未运行，请先启动 Ollama 或本地 LLM 服务'
     }
   })
