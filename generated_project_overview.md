@@ -26,7 +26,6 @@ electron_demo/
 │       │   └── main.tsx
 │       └── index.html
 ├── .editorconfig
-├── .env copy
 ├── .env_example
 ├── .gitignore
 ├── .npmrc
@@ -58,15 +57,6 @@ indent_size = 2
 end_of_line = lf
 insert_final_newline = true
 trim_trailing_whitespace = true
-```
-
-## `.env copy`
-
-```
-OPENROUTER_API_KEY='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'
-OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
-OPENROUTER_MODEL_NAME="deepseek/deepseek-chat-v3.1:free" # "openai/gpt-oss-20b:free" # "deepseek/deepseek-chat-v3-0324:free" # "qwen/qwen3-coder:free" #"deepseek/deepseek-r1-0528:free"#
-
 ```
 
 ## `.env_example`
@@ -389,8 +379,6 @@ function findAndLoadEnv() {
 findAndLoadEnv()
 // --- 智能查找结束 ---
 
-
-// ✅ 使用环境变量存储 OpenRouter API 信息
 const client = new OpenAI({
   baseURL: process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1',
   apiKey: process.env.OPENROUTER_API_KEY ?? ''
@@ -405,8 +393,7 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
-      contextIsolation: true
+      sandbox: false
     }
   })
 
@@ -421,7 +408,6 @@ function createWindow(): void {
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-    mainWindow.webContents.openDevTools()
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
@@ -434,53 +420,65 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
+  // 应用版本号
   ipcMain.handle('get-app-version', () => app.getVersion())
 
+  // 云端 LLM（一次性返回）
   ipcMain.handle('ask-llm-cloud', async (_, prompt: string) => {
-    if (!client.apiKey) {
-      console.error('OpenRouter API Key 未配置！')
-      return '⚠️ 云端调用失败: 请在项目根目录或其父目录中放置 .env 文件并配置 OPENROUTER_API_KEY。'
-    }
-
     try {
       const completion = await client.chat.completions.create({
-        model: process.env.OPENROUTER_MODEL_NAME ?? 'deepseek/deepseek-chat-v3.1:free',
+        model: process.env.OPENROUTER_MODEL_NAME ?? 'openai/gpt-3.5-turbo',
         messages: [{ role: 'user', content: prompt }]
       })
       return completion.choices?.[0]?.message?.content ?? '(云端无结果)'
     } catch (err: any) {
       console.error('云端调用出错:', err)
-      if (err.status === 401) {
-        return '⚠️ 云端调用失败: API Key 无效或错误，请检查 .env 文件中的配置。'
-      }
       return `⚠️ 云端调用失败: ${err.message}`
     }
   })
 
+  // 云端 LLM（流式输出）
+  ipcMain.handle('ask-llm-cloud-stream', async (_, prompt: string) => {
+    if (!client.apiKey) {
+      return '⚠️ 云端调用失败: API Key 未配置'
+    }
+
+    try {
+      const stream = await client.chat.completions.create({
+        model: process.env.OPENROUTER_MODEL_NAME ?? 'openai/gpt-3.5-turbo',
+        messages: [{ role: 'user', content: prompt }],
+        stream: true
+      })
+
+      let fullText = ''
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content ?? ''
+        fullText += delta
+
+        // 推送到渲染进程
+        BrowserWindow.getAllWindows().forEach((win) => {
+          win.webContents.send('cloud-stream-data', delta)
+        })
+      }
+
+      return fullText
+    } catch (err: any) {
+      console.error('流式云端调用出错:', err)
+      return `⚠️ 云端调用失败: ${err.message}`
+    }
+  })
+
+  // 本地 LLM（Ollama）
   ipcMain.handle('ask-llm-local', async (_, prompt: string) => {
     try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 5000)
-
       const resp = await fetch('http://127.0.0.1:11434/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'llama3', prompt }),
-        signal: controller.signal
+        body: JSON.stringify({ model: 'llama3', prompt })
       })
-
-      clearTimeout(timeoutId)
-
-      const text = await resp.text()
-      const lines = text.trim().split('\n')
-      const lastLine = lines[lines.length - 1]
-      const data = JSON.parse(lastLine)
-      
+      const data = await resp.json()
       return data.response ?? '(本地无结果)'
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        return '⚠️ 本地模型响应超时，请确认 Ollama 服务是否正常且模型已加载。'
-      }
+    } catch {
       return '⚠️ 本地模型未运行，请先启动 Ollama 或本地 LLM 服务'
     }
   })
@@ -497,30 +495,36 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
+
 ```
 
 ## `src/preload/index.d.ts`
 
 ```typescript
 // src/preload/index.d.ts
+import { IpcRendererEvent } from 'electron'
+
+// ✅ 为暴露到 window.electron 的 API 定义精确的类型
+export interface IElectronAPI {
+  renderer: {
+    send: (channel: string, data?: any) => void
+    on: (channel: string, listener: (event: IpcRendererEvent, ...args: any[]) => void) => void
+    invoke: <T>(channel: string, ...args: any[]) => Promise<T>
+    onCloudStream: (callback: (data: string) => void) => () => void // ✅ 更新这里的类型
+  }
+  process: {
+    versions: NodeJS.ProcessVersions
+  }
+}
+
 declare global {
   interface Window {
-    electron: {
-      renderer: {
-        send: (channel: string, data?: any) => void
-        on: (channel: string, listener: (event: any, ...args: any[]) => void) => void
-        invoke: (channel: string, ...args: any[]) => Promise<any>
-      }
-      process: {
-        versions: NodeJS.ProcessVersions
-      }
-    }
-    api: unknown
+    // 将 electron API 绑定到 window 对象上
+    electron: IElectronAPI
   }
 }
 
 export {}
-
 ```
 
 ## `src/preload/index.ts`
@@ -529,7 +533,6 @@ export {}
 // src/preload/index.ts
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron'
 
-// 统一暴露到 window.electron 的 API
 const api = {
   renderer: {
     send: (channel: string, data?: any) => ipcRenderer.send(channel, data),
@@ -538,9 +541,19 @@ const api = {
     },
     invoke: (channel: string, ...args: any[]): Promise<any> => {
       return ipcRenderer.invoke(channel, ...args)
+    },
+    
+    // ✅ 优化：监听流式输出，并返回一个用于取消监听的函数
+    onCloudStream: (callback: (data: string) => void): (() => void) => {
+      const listener = (_: IpcRendererEvent, data: string) => callback(data)
+      ipcRenderer.on('cloud-stream-data', listener)
+      
+      // 返回一个函数，调用它即可移除监听器
+      return () => {
+        ipcRenderer.removeListener('cloud-stream-data', listener)
+      }
     }
   },
-  // 只暴露需要的进程信息，避免把完整 process 暴露给渲染进程
   process: {
     versions: process.versions
   }
@@ -548,15 +561,12 @@ const api = {
 
 contextBridge.exposeInMainWorld('electron', api)
 
-// ✅ 建议删除之前这里的 declare global（如果你留着，就改成 typeof api 保持一致）
+// ✅ 我们需要更新类型定义文件来匹配新的 onCloudStream 函数签名
 declare global {
   interface Window {
     electron: typeof api
   }
 }
-
-export {}
-
 ```
 
 ## `src/renderer/index.html`
@@ -586,12 +596,40 @@ export {}
 
 ```
 // src/renderer/src/App.tsx
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react' // ✅ 引入 useEffect
 
 function App(): React.JSX.Element {
   const [appVersion, setAppVersion] = useState('未知')
   const [prompt, setPrompt] = useState('')
   const [response, setResponse] = useState('')
+  const [isStreaming, setIsStreaming] = useState(false) // ✅ 新增状态：用于判断是否正在流式输出
+  const preRef = useRef<HTMLPreElement>(null)
+
+  // ✅ 使用 useEffect 来管理事件监听的生命周期
+  useEffect(() => {
+    // 这个函数只会在组件首次加载时运行一次
+
+    // 设置监听器，并获取取消监听的函数
+    const cleanup = window.electron.renderer.onCloudStream((delta) => {
+      setResponse((prev) => prev + delta)
+    })
+
+    // 返回一个清理函数
+    // 这个函数将会在组件被卸载时自动调用
+    return () => {
+      console.log('组件卸载，取消云端流式监听')
+      cleanup()
+    }
+  }, []) // ✅ 空数组 [] 意味着这个 effect 只运行一次，类似 "componentDidMount"
+
+  // ✅ 新增一个 effect，专门负责自动滚动
+  useEffect(() => {
+    // 每当 response 变化时，这个 effect 就会运行
+    if (preRef.current) {
+      // preRef.current 就是那个 <pre> DOM 元素
+      preRef.current.scrollTop = preRef.current.scrollHeight
+    }
+  }, [response])
 
   const handleGetVersion = async (): Promise<void> => {
     const version = await window.electron.renderer.invoke('get-app-version')
@@ -599,13 +637,31 @@ function App(): React.JSX.Element {
   }
 
   const handleAskCloud = async (): Promise<void> => {
-    if (!prompt) return
+    if (!prompt || isStreaming) return
+    setResponse('')
     const ans = await window.electron.renderer.invoke('ask-llm-cloud', prompt)
     setResponse(ans)
   }
 
+  const handleAskCloudStream = async (): Promise<void> => {
+    if (!prompt || isStreaming) return
+    setResponse('') // 清空旧内容
+    setIsStreaming(true) // 开始流式输出
+
+    try {
+      // 只发起请求，数据接收由 useEffect 中的监听器负责
+      await window.electron.renderer.invoke('ask-llm-cloud-stream', prompt)
+    } catch (error) {
+      console.error('流式请求调用失败:', error)
+      setResponse('流式请求发起失败，请查看主进程日志。')
+    } finally {
+      setIsStreaming(false) // 流式输出结束
+    }
+  }
+
   const handleAskLocal = async (): Promise<void> => {
-    if (!prompt) return
+    if (!prompt || isStreaming) return
+    setResponse('')
     const ans = await window.electron.renderer.invoke('ask-llm-local', prompt)
     setResponse(ans)
   }
@@ -625,19 +681,42 @@ function App(): React.JSX.Element {
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="请输入你的问题..."
+          disabled={isStreaming} // ✅ 当流式输出时，禁用输入框
         />
       </div>
 
       <div style={{ marginBottom: '10px' }}>
-        <button onClick={handleAskCloud}>云端 LLM 回复</button>
-        <button onClick={handleAskLocal} style={{ marginLeft: '10px' }}>
+        <button onClick={handleAskCloud} disabled={isStreaming}>
+          云端 LLM 回复
+        </button>
+        <button
+          onClick={handleAskCloudStream}
+          style={{ marginLeft: '10px' }}
+          disabled={isStreaming}
+        >
+          {isStreaming ? '正在接收...' : '云端流式 LLM 回复'}
+        </button>
+        <button onClick={handleAskLocal} style={{ marginLeft: '10px' }} disabled={isStreaming}>
           本地 LLM 回复
         </button>
       </div>
 
       <div>
         <p>模型回答：</p>
-        <pre style={{ whiteSpace: 'pre-wrap' }}>{response}</pre>
+        <pre
+          ref={preRef}
+          style={{
+            whiteSpace: 'pre-wrap',
+            wordWrap: 'break-word', // 确保长单词也能换行
+            height: '200px', // ✅ 设置一个固定的高度
+            overflowY: 'auto', // ✅ 当内容超出高度时，自动显示垂直滚动条
+            border: '1px solid #555', // 加个边框让它更像一个独立的区域
+            padding: '10px', // 增加内边距
+            backgroundColor: '#1e1e1e' // 给个深色背景
+          }}
+        >
+          {response}
+        </pre>
       </div>
     </div>
   )

@@ -1,3 +1,4 @@
+// src/preload/index.ts
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron'
 
 const api = {
@@ -9,9 +10,16 @@ const api = {
     invoke: (channel: string, ...args: any[]): Promise<any> => {
       return ipcRenderer.invoke(channel, ...args)
     },
-    // 新增：监听流式输出
-    onCloudStream: (callback: (data: string) => void) => {
-      ipcRenderer.on('cloud-stream-data', (_, data) => callback(data))
+    
+    // ✅ 优化：监听流式输出，并返回一个用于取消监听的函数
+    onCloudStream: (callback: (data: string) => void): (() => void) => {
+      const listener = (_: IpcRendererEvent, data: string) => callback(data)
+      ipcRenderer.on('cloud-stream-data', listener)
+      
+      // 返回一个函数，调用它即可移除监听器
+      return () => {
+        ipcRenderer.removeListener('cloud-stream-data', listener)
+      }
     }
   },
   process: {
@@ -20,3 +28,10 @@ const api = {
 }
 
 contextBridge.exposeInMainWorld('electron', api)
+
+// ✅ 我们需要更新类型定义文件来匹配新的 onCloudStream 函数签名
+declare global {
+  interface Window {
+    electron: typeof api
+  }
+}
