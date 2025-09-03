@@ -1,6 +1,6 @@
 // src/main/index.ts
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { join, dirname, resolve } from 'path' // ✅ 引入 path 模块的更多功能
+import { join, resolve } from 'path' // ✅ 引入 path 模块的更多功能
 import fs from 'fs' // ✅ 引入 fs 模块
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -10,22 +10,22 @@ import dotenv from 'dotenv'
 // ✅ --- 智能查找并加载 .env 文件的函数 ---
 function findAndLoadEnv() {
   let currentDir = __dirname // 从当前文件所在目录开始
-  
+
   // 循环向上查找，直到到达根目录
   while (currentDir !== resolve(currentDir, '..')) {
     const envPath = join(currentDir, '.env')
-    
+
     // 如果在当前目录找到了 .env 文件
     if (fs.existsSync(envPath)) {
       console.log(`✅ 成功在 ${currentDir} 目录找到并加载 .env 文件`)
       dotenv.config({ path: envPath })
       return // 找到就立刻停止
     }
-    
+
     // 否则，移动到上一层父目录继续查找
     currentDir = resolve(currentDir, '..')
   }
-  
+
   // 如果循环结束还没找到
   console.warn('⚠️ 未能在任何父目录中找到 .env 文件，将使用默认配置。')
 }
@@ -125,16 +125,37 @@ app.whenReady().then(() => {
 
   // 本地 LLM（Ollama）
   ipcMain.handle('ask-llm-local', async (_, prompt: string) => {
+    // ✅ 增加一个日志，确认函数被调用且参数正确
+    console.log(`[Ollama] 收到本地调用请求, prompt: "${prompt}"`)
+
     try {
-      const resp = await fetch('http://127.0.0.1:11434/api/generate', {
+      const resp = await fetch('http://127.0.0.1:11434/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'llama3', prompt })
+        body: JSON.stringify({
+          model: 'gemma3:270m', // 确保这个模型名称你已经 pull 下来了
+          messages: [{ role: 'user', content: prompt }],
+          stream: false // ✅ 明确地像 curl 一样，添加 stream: false
+        })
       })
+
+      // ✅ 增加判断，检查网络请求是否真的成功 (HTTP 状态码 200-299)
+      if (!resp.ok) {
+        // 如果状态码不对，读取错误文本并抛出
+        const errorText = await resp.text()
+        console.error(`[Ollama] 请求失败，HTTP 状态码: ${resp.status}`, errorText)
+        throw new Error(`请求失败，状态码 ${resp.status}: ${errorText}`)
+      }
+
       const data = await resp.json()
-      return data.response ?? '(本地无结果)'
-    } catch {
-      return '⚠️ 本地模型未运行，请先启动 Ollama 或本地 LLM 服务'
+      return data.message?.content ?? '(本地无结果)'
+    } catch (err: any) {
+      // ✅ 修改这里，接收错误对象 err
+      // ✅ 核心修改：在控制台打印出完整的、真实的错误信息！
+      console.error('[Ollama] 本地调用时发生严重错误:', err)
+
+      // ✅ 返回一个更具体的错误信息给界面
+      return `⚠️ 本地模型调用失败: ${err.message}`
     }
   })
 
